@@ -68,6 +68,7 @@ app.use(express.json({limit:'1mb'}));
 app.use(express.urlencoded({extended:false,limit:'1mb'}));
 app.use(session({ name:'oferton.sid', secret:process.env.SESSION_SECRET || 'dev-only-change-this-secret-please-123456', resave:false, saveUninitialized:false, store:new SQLiteStore({db:'sessions.sqlite',dir:DATA}), cookie:{httpOnly:true,sameSite:'lax',secure:process.env.NODE_ENV==='production',maxAge:8*60*60*1000} }));
 app.use('/api/login', rateLimit({windowMs:15*60*1000,limit:10,standardHeaders:true,legacyHeaders:false}));
+app.use('/api/recover-password', rateLimit({windowMs:15*60*1000,limit:5,standardHeaders:true,legacyHeaders:false}));
 app.use(express.static(path.join(ROOT,'public'), {extensions:['html']}));
 const requireAdmin = (req,res,next) => { if (!req.session?.admin) return res.status(401).json({error:'Debes iniciar sesión como administrador.'}); if (!['GET','HEAD','OPTIONS'].includes(req.method) && req.headers.origin && req.headers.origin !== `${req.protocol}://${req.get('host')}`) return res.status(403).json({error:'Origen no autorizado.'}); next(); };
 const uploadImage = multer({storage:multer.diskStorage({destination:(req,file,cb)=>cb(null,PUBLIC_UPLOADS),filename:(req,file,cb)=>cb(null,crypto.randomUUID()+path.extname(file.originalname).toLowerCase())}),limits:{fileSize:5*1024*1024},fileFilter:(req,file,cb)=>cb(null,['image/jpeg','image/png','image/webp'].includes(file.mimetype))});
@@ -81,6 +82,19 @@ if (process.env.ADMIN_USERNAME && process.env.ADMIN_PASSWORD && !process.env.ADM
 app.get('/api/public/settings',(req,res)=>{ const s=getSettings(); res.json({store_name:s.store_name,tagline:s.tagline,accent:s.accent,whatsapp:s.whatsapp,yape_enabled:s.yape_enabled==='1',banner_title:s.banner_title,banner_text:s.banner_text,logo:s.logo}); });
 app.get('/api/products',(req,res)=>res.json(db.prepare('SELECT id,slug,name,description,category,tags,image,offer_price,regular_price,stock,featured,variants FROM products WHERE active=1 ORDER BY featured DESC,id DESC').all().map(p=>({...p,offer_price:asSoles(p.offer_price),regular_price:asSoles(p.regular_price),tags:JSON.parse(p.tags),variants:JSON.parse(p.variants)}))));
 app.get('/api/products/:slug',(req,res)=>{const p=db.prepare('SELECT * FROM products WHERE slug=? AND active=1').get(req.params.slug); if(!p)return res.status(404).json({error:'Producto no encontrado'});res.json({...p,offer_price:asSoles(p.offer_price),regular_price:asSoles(p.regular_price),tags:JSON.parse(p.tags),variants:JSON.parse(p.variants)});});
+app.post('/api/recover-password',async(req,res)=>{
+ const recoveryCode=String(req.body?.recoveryCode||'');
+ const next=String(req.body?.newPassword||'');
+ const configured=String(process.env.ADMIN_RECOVERY_CODE||'');
+ if(!configured||configured.length<24)return res.status(503).json({error:'La recuperación no está configurada. Contacta al administrador del servicio.'});
+ if(!safeEqual(recoveryCode,configured))return res.status(401).json({error:'Código de recuperación incorrecto.'});
+ if(next.length<12||next.length>200)return res.status(400).json({error:'La nueva contraseña debe tener entre 12 y 200 caracteres.'});
+ const username=String(process.env.ADMIN_USERNAME||'');
+ const user=db.prepare('SELECT id FROM admin_users WHERE username=?').get(username);
+ if(!user)return res.status(503).json({error:'No se encontró la cuenta administradora configurada.'});
+ db.prepare('UPDATE admin_users SET password_hash=? WHERE id=?').run(await bcrypt.hash(next,12),user.id);
+ res.json({ok:true,message:'Contraseña restablecida. Ya puedes iniciar sesión.'});
+});
 app.post('/api/login',async(req,res)=>{const {username,password}=req.body||{};const u=db.prepare('SELECT * FROM admin_users WHERE username=?').get(String(username||''));if(!u || !await bcrypt.compare(String(password||''),u.password_hash))return res.status(401).json({error:'Usuario o contraseña incorrectos.'});req.session.regenerate(err=>{if(err)return res.status(500).json({error:'No se pudo iniciar sesión.'});req.session.admin={id:u.id,username:u.username};res.json({ok:true,username:u.username});});});
 app.post('/api/logout',requireAdmin,(req,res)=>req.session.destroy(()=>res.json({ok:true})));
 app.get('/api/admin/me',requireAdmin,(req,res)=>res.json({username:req.session.admin.username}));
