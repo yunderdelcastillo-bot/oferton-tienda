@@ -84,6 +84,16 @@ app.get('/api/products/:slug',(req,res)=>{const p=db.prepare('SELECT * FROM prod
 app.post('/api/login',async(req,res)=>{const {username,password}=req.body||{};const u=db.prepare('SELECT * FROM admin_users WHERE username=?').get(String(username||''));if(!u || !await bcrypt.compare(String(password||''),u.password_hash))return res.status(401).json({error:'Usuario o contraseña incorrectos.'});req.session.regenerate(err=>{if(err)return res.status(500).json({error:'No se pudo iniciar sesión.'});req.session.admin={id:u.id,username:u.username};res.json({ok:true,username:u.username});});});
 app.post('/api/logout',requireAdmin,(req,res)=>req.session.destroy(()=>res.json({ok:true})));
 app.get('/api/admin/me',requireAdmin,(req,res)=>res.json({username:req.session.admin.username}));
+app.post('/api/admin/change-password',requireAdmin,async(req,res)=>{
+ const current=String(req.body?.currentPassword||'');
+ const next=String(req.body?.newPassword||'');
+ if(next.length<12||next.length>200)return res.status(400).json({error:'La nueva contraseña debe tener entre 12 y 200 caracteres.'});
+ const user=db.prepare('SELECT id,password_hash FROM admin_users WHERE id=?').get(req.session.admin.id);
+ if(!user||!await bcrypt.compare(current,user.password_hash))return res.status(401).json({error:'La contraseña actual es incorrecta.'});
+ if(await bcrypt.compare(next,user.password_hash))return res.status(400).json({error:'La nueva contraseña debe ser diferente.'});
+ db.prepare('UPDATE admin_users SET password_hash=? WHERE id=?').run(await bcrypt.hash(next,12),user.id);
+ res.json({ok:true,message:'Contraseña actualizada correctamente.'});
+});
 app.get('/api/admin/settings',requireAdmin,(req,res)=>res.json(getSettings()));
 app.post('/api/admin/settings',requireAdmin,uploadImage.fields([{name:'logo',maxCount:1},{name:'yape_qr',maxCount:1}]),(req,res)=>{
  const allowed=['store_name','tagline','accent','whatsapp','yape_number','yape_holder','yape_instructions','yape_enabled','shipping_flat','assistant_enabled','banner_title','banner_text'];
